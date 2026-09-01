@@ -45,7 +45,7 @@ def record_cotracker(
     destination = Path(output)
     result.save(destination, visibility_threshold=visibility_threshold)
     report = {
-        "scope": "offline rolling point measurement; no simulator authority",
+        "scope": "rolling-reset continuity audit; not qualified as simulator input",
         "video": str(Path(video).resolve()),
         "support": str(Path(support_path).resolve()),
         "output": str(destination.resolve()),

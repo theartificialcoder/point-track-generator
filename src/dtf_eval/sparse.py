@@ -197,8 +197,6 @@ def strided_reference_queries(
         selected = mask[grid_y, grid_x] & (ownership_count[grid_y, grid_x] == 1)
         object_points = np.column_stack([grid_x[selected], grid_y[selected]]).astype(np.float32)
         if not len(object_points):
-            object_points = _spatial_sample(mask & (ownership_count == 1), 1)
-        if not len(object_points):
             continue
         points.append(object_points)
         track_ids.extend([int(instance.track_id)] * len(object_points))
@@ -249,7 +247,6 @@ def continuous_strided_queries(
         )
         for instance in instances:
             object_id = int(instance.track_id)
-            seen.add(object_id)
             mask = _resize_mask(instance.mask, size)
             unambiguous = mask & (ownership_count == 1)
             selected = unambiguous[grid_y, grid_x]
@@ -257,9 +254,8 @@ def continuous_strided_queries(
                 [grid_x[selected], grid_y[selected]]
             ).astype(np.float32)
             if not len(object_points):
-                object_points = _spatial_sample(unambiguous, 1)
-            if not len(object_points):
                 continue
+            seen.add(object_id)
             points.append(object_points)
             count = len(object_points)
             track_ids.extend([object_id] * count)

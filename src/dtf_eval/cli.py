@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     runtime.add_argument("--output", type=Path, default=Path("reports/runtime.json"))
     record = subparsers.add_parser(
         "record",
-        help="record bounded rolling CoTracker trajectories from blob-sim support",
+        help="audit the rejected rolling-reset recorder on blob-sim support",
     )
     record.add_argument("--video", required=True, type=Path)
     record.add_argument("--support", required=True, type=Path)
@@ -68,7 +68,7 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--visibility-threshold", type=float, default=0.6)
     qualify = subparsers.add_parser(
         "qualify-rolling",
-        help="qualify continuous rolling CoTracker on reviewed masks",
+        help="reproduce the rejected rolling-reset qualification",
     )
     qualify.add_argument("--archive", required=True, type=Path)
     qualify.add_argument("--checkpoint", required=True, type=Path)

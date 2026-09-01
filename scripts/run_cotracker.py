@@ -27,7 +27,11 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=216)
     parser.add_argument("--model-width", type=int)
     parser.add_argument("--model-height", type=int)
+    parser.add_argument("--query-batch-size", type=int)
     args = parser.parse_args()
+
+    if args.query_batch_size is not None and args.query_batch_size < 1:
+        raise ValueError("query batch size must be positive")
 
     model_width = args.model_width or args.width
     model_height = args.model_height or args.height
@@ -43,42 +47,59 @@ def main() -> int:
 
     device = torch.device("cuda")
     model = CoTrackerOnlinePredictor(checkpoint=args.checkpoint).to(device)
-    query_values = np.column_stack(
-        [
-            queries.frame_indices.astype(np.float32),
-            queries.points
-            * np.asarray(
-                [model_width / args.width, model_height / args.height], dtype=np.float32
-            ),
-        ]
-    )
-    query_tensor = torch.from_numpy(query_values[None]).to(device)
-    model(
-        torch.empty((1, 1, 3, model_height, model_width), device=device),
-        is_first_step=True,
-        queries=query_tensor,
-    )
-
-    torch.cuda.reset_peak_memory_stats(device)
-    started = time.perf_counter()
-    tracks = visibility = None
     padded_length = int(np.ceil(len(images) / model.step) * model.step)
     if padded_length > len(images):
         padding = np.repeat(images[-1:], padded_length - len(images), axis=0)
         images = np.concatenate([images, padding])
-    for begin in range(0, len(images) - model.step, model.step):
-        chunk = images[begin : begin + model.step * 2]
-        video = torch.from_numpy(chunk).permute(0, 3, 1, 2).float()[None].to(device)
-        tracks, visibility = model(video)
-    torch.cuda.synchronize(device)
-    if tracks is None or visibility is None:
-        raise RuntimeError("CoTracker produced no tracks")
 
-    coordinates = tracks[0, : len(frames), : len(queries.points)].cpu().numpy()
-    coordinates *= np.asarray([args.width / model_width, args.height / model_height])
+    point_count = len(queries.points)
+    batch_size = args.query_batch_size or point_count
+    coordinates = np.empty((len(frames), point_count, 2), dtype=np.float32)
+    confidence = np.empty((len(frames), point_count), dtype=np.float32)
+    scale_to_model = np.asarray(
+        [model_width / args.width, model_height / args.height], dtype=np.float32
+    )
+    scale_to_native = np.asarray(
+        [args.width / model_width, args.height / model_height], dtype=np.float32
+    )
+
+    torch.cuda.reset_peak_memory_stats(device)
+    started = time.perf_counter()
+    for batch_start in range(0, point_count, batch_size):
+        batch_end = min(point_count, batch_start + batch_size)
+        member = slice(batch_start, batch_end)
+        query_values = np.column_stack(
+            [
+                queries.frame_indices[member].astype(np.float32),
+                queries.points[member] * scale_to_model,
+            ]
+        )
+        query_tensor = torch.from_numpy(query_values[None]).to(device)
+        model(
+            torch.empty((1, 1, 3, model_height, model_width), device=device),
+            is_first_step=True,
+            queries=query_tensor,
+        )
+        tracks = visibility = None
+        for begin in range(0, len(images) - model.step, model.step):
+            chunk = images[begin : begin + model.step * 2]
+            video = torch.from_numpy(chunk).permute(0, 3, 1, 2).float()[None].to(device)
+            tracks, visibility = model(video)
+        if tracks is None or visibility is None:
+            raise RuntimeError("CoTracker produced no tracks")
+        coordinates[:, member] = (
+            tracks[0, : len(frames), : batch_end - batch_start].cpu().numpy()
+            * scale_to_native
+        )
+        confidence[:, member] = visibility[
+            0, : len(frames), : batch_end - batch_start
+        ].float().cpu().numpy()
+        print(f"tracked {batch_end}/{point_count} points", flush=True)
+
+    torch.cuda.synchronize(device)
     result = SparseTracks(
         coordinates,
-        visibility[0, : len(frames), : len(queries.points)].float().cpu().numpy(),
+        confidence,
         queries,
         time.perf_counter() - started,
         torch.cuda.max_memory_allocated(device),
@@ -89,6 +110,7 @@ def main() -> int:
         {
             "frames": len(frames),
             "queries": len(queries.points),
+            "query_batch_size": batch_size,
             "seconds": result.runtime_seconds,
             "peak_mib": result.peak_gpu_memory_bytes / 1024**2,
             "output": str(args.output),

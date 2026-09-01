@@ -7,7 +7,7 @@ videos, generated archives and reports are intentionally excluded from Git.
 It qualifies correspondence trackers without changing the simulator runtime:
 
 - **DTF-Net:** one reference frame mapped directly across the clip;
-- **CoTracker3 online:** joint query-point tracking in overlapping windows;
+- **CoTracker3 online:** joint query-point tracking with uninterrupted temporal state;
 - **MFTIQ+RAFT:** causal multi-flow tracking with learned matching quality;
 - **Farneback chain:** the current two-frame control baseline accumulated through time.
 
@@ -22,8 +22,8 @@ The simulator experiment uses three deliberately separate passes:
 
 1. `blob-sim` exports its current calibrated motion support. Point tracks,
    learned masks and body dynamics have no authority in this pass.
-2. This project admits points only inside that support and records bounded,
-   rolling CoTracker measurements in native video coordinates.
+2. This project admits native stride-8 points inside that support and records
+   point measurements in native video coordinates.
 3. A fresh `blob-sim` run consumes the neutral trajectory archive. The simulator
    cannot alter the prerecorded tracker result.
 
@@ -35,7 +35,8 @@ blob-sim bench export-trajectory-support \
   --duration 20 --output /tmp/bd-support.npz
 ```
 
-Record the corresponding rolling point measurements on the GPU:
+The former rolling recorder is retained only to reproduce its failed continuity
+audit. It resets CoTracker every eight frames and must not supply the simulator:
 
 ```bash
 cd ../dtf-eval
@@ -46,10 +47,9 @@ PYTHONPATH=src python -m dtf_eval.cli record \
   --output /tmp/bd-trajectories.npz --device cuda
 ```
 
-The archive contains coordinates, confidence, visibility, birth frame and source
-frame index. It contains no object identity, mask correction or simulator state.
-The default tracker window uses eight future frames; this latency is recorded in
-the archive rather than described as causal real-time inference.
+Its archive contains no object identity, mask correction or simulator state,
+but the recorder is not qualified. The replacement must preserve temporal model
+state and batch only query points for GPU memory.
 
 ## Setup
 
@@ -67,10 +67,9 @@ Place provider checkpoints under `models/`; the directory is ignored by Git.
 Each report must record the provider, checkpoint, input resolution, query
 spacing, temporal window, runtime and peak GPU memory.
 
-## Rolling Qualification
+## Qualification
 
-Use the reviewed 500-frame sequence to qualify continuous admission and tracking
-without changing any trajectory from annotations:
+The legacy command below reproduces the rejected reset-every-eight-frames audit:
 
 ```bash
 dtf-eval qualify-rolling \
@@ -79,22 +78,13 @@ dtf-eval qualify-rolling \
   --start 0 --length 250 --output reports/rolling-selection
 ```
 
-Lock tracker resolution, stride, capacity, advance and confidence threshold on
-frames 0-249. Then run frames 250-499 once as the held-out evaluation:
+Do not run frames 250-499 until support-only admission and the continuous
+provider configuration are locked on frames 0-249.
 
-```bash
-dtf-eval qualify-rolling \
-  --archive /data/day-normal_000000-000499_v1.zip \
-  --checkpoint models/cotracker3/scaled_online.pth \
-  --start 250 --length 250 --output reports/rolling-evaluation
-```
-
-This benchmark reports continuous object admission, admission delay,
-same-object retention, identity/background leakage, object scale, confidence
-sensitivity, runtime, memory and active-capacity saturation. Annotation masks
-provide oracle admission only for this upper-bound test. Exact point error and
-occlusion recovery cannot be claimed because the dataset has neither physical
-point trajectories nor valid positive occlusion labels.
+The selection benchmark reports same-object retention, identity/background
+leakage, scale, horizon, runtime and memory. Exact point error and occlusion
+recovery cannot be claimed because the dataset has neither physical point
+trajectories nor valid positive occlusion labels.
 
 The current locked-selection status is recorded in
 [`QUALIFICATION.md`](QUALIFICATION.md). Do not run the held-out half while the

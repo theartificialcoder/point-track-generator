@@ -51,7 +51,7 @@ def main() -> int:
 
     query_points = np.column_stack(
         [
-            np.full(len(queries.points), queries.frame_index, dtype=np.float32),
+            queries.frame_indices.astype(np.float32),
             queries.points[:, 1],
             queries.points[:, 0],
         ]

@@ -1,52 +1,58 @@
-# Rolling Point-Tracker Qualification
+# Point-Tracker Qualification
 
 ## Current Verdict
 
-CoTracker3 online with the current rolling admission policy is **not qualified**
-as simulator input. The held-out evaluation half remains untouched.
+No provider is yet qualified as simulator input. CoTracker3 is the current
+conditional-tracking baseline, but point admission from unlabelled motion
+support remains unqualified. The held-out evaluation half remains untouched.
 
-## Selection Protocol
+## Fixed Protocol
 
 | Item | Value |
 |---|---|
 | Data | reviewed day-normal frames 0-249 |
-| Admission | annotation-mask oracle; qualification only |
-| Tracker input | 512x288 RGB |
+| Queries | exact native-coordinate stride-8 lattice |
+| Tracker input | 512x288 RGB; output restored to 1424x802 |
 | Output coordinates | native 1424x802 |
-| Query spacing | 8 native pixels |
-| Rolling window / advance | 16 / 8 frames |
-| Active capacity | 1,024 tracks |
+| Query birth | first labelled-object/lattice intersection; scoring only |
+| Temporal state | uninterrupted across the selected clip |
+| Memory control | independent query batches; no temporal reset |
 | Confidence decision | 0.60 |
 
-Annotations admit test points and score region membership. They never correct a
-trajectory. The benchmark cannot measure exact physical point error or true
-occlusion recovery because those labels are unavailable.
+Annotations place the selection cohort and score later region membership. They
+never correct a trajectory. This tests conditional tracking, not unlabelled
+point admission, exact physical point error, or true occlusion recovery.
 
-## Selection Results
+## CoTracker Selection Results
 
 | Measure | Result |
 |---|---:|
-| Annotated objects admitted | 129 / 176 |
-| Object-frame coverage | 73.9% |
-| Admission delay, median / p90 | 3 / 20 frames |
-| Same-object recall / precision | 64.1% / 68.1% |
-| Small / medium / large recall | 53.2% / 62.3% / 76.7% |
-| Identity / background leakage | 5.9% / 26.0% |
-| Capacity-limited windows | 5 |
-| Runtime / peak GPU memory | 99.7 s / 2.28 GiB |
+| Queries / labelled objects | 3,582 / 173 |
+| Same-object recall / precision | 78.7% / 87.4% |
+| Object-balanced recall / precision | 68.9% / 71.7% |
+| Small / medium / large recall | 59.7% / 93.9% / 79.1% |
+| Identity / background leakage | 2.6% / 10.0% |
+| Recall at frame 60 / 249 | 88.5% / 69.9% |
+| Runtime / peak GPU memory | 563.2 s / 2.36 GiB |
 
-Recall falls from 95.2% at frame 8 to 71.6% at frame 60 and 66.4% at frame
-249. Raising the confidence decision from 0.30 to 0.90 changes precision only
-from 68.0% to 68.5%; provider confidence therefore does not reliably reject
-drift in this sequence.
+Query batching was checked on the 64-frame cohort. A 128-point batch changed
+overall recall from 93.48% to 93.31%; it preserves temporal memory and is an
+acceptable GPU-memory control. Feeding native-size frames improved small-object
+recall slightly but reduced overall recall, because CoTracker still normalizes
+its internal resolution.
 
-A selection-only sampler that placed one interior point in every occupied tile
-was also tested. It increased point count and compute but reduced object
-admission and retention in crowded traffic, so it was removed.
+## Rejected Configurations
+
+| Configuration | Finding |
+|---|---|
+| CoTracker reset every 8 frames | Same 450 points fell from 94.7% to 84.4% recall; background leakage rose from 4.4% to 13.8%. |
+| Motion-onset query admission | Boundary-biased points reached 83.7% recall and 14.6% background leakage over 64 frames. |
+| TAPNext++ 512 | Only marginally exceeded CoTracker over 64 frames, but was about 103 times slower. |
+| LocoTrack Base | Native 64-frame input exceeded the available 4 GiB GPU memory. |
 
 ## Required Before Held-Out Evaluation
 
-1. Qualify a better continuous admission policy without annotation or object ID.
-2. Compare at least one alternative tracker through the same rolling interface.
-3. Lock resolution, spacing, advance, capacity and confidence on frames 0-249.
+1. Qualify native stride-8 point admission from motion support without labels.
+2. Preserve uninterrupted tracker memory; do not restore rolling resets.
+3. Lock the admission and provider configuration on frames 0-249.
 4. Run frames 250-499 once after the configuration is fixed.

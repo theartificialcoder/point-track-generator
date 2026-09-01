@@ -48,6 +48,23 @@ def test_continuous_queries_add_objects_at_first_appearance() -> None:
     )
 
 
+def test_continuous_queries_wait_for_native_lattice_intersection() -> None:
+    tiny = np.zeros((8, 12), dtype=bool)
+    tiny[0, 0] = True
+    grown = np.zeros((8, 12), dtype=bool)
+    grown[0:5, 0:5] = True
+    image = np.zeros((8, 12, 3), dtype=np.uint8)
+    frames = (
+        Frame(0, image, (Instance(7, "car", tiny),)),
+        Frame(1, image, (Instance(7, "car", grown),)),
+    )
+
+    queries = continuous_strided_queries(frames, (12, 8), stride=8)
+
+    np.testing.assert_array_equal(queries.points, [[4.0, 4.0]])
+    np.testing.assert_array_equal(queries.frame_indices, [1])
+
+
 def test_region_retention_separates_background_leak() -> None:
     queries = QuerySet(np.array([[3, 3]], dtype=np.float32), np.array([7]), np.array(["car"]))
     tracks = SparseTracks(
