@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dense trajectory evaluation</title>
+<style>
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #111417; color: #e8ecef; }
+header { height: 54px; display: flex; align-items: center; gap: 16px; padding: 0 18px; border-bottom: 1px solid #30363b; background: #181c20; }
+h1 { margin: 0; font-size: 15px; font-weight: 650; }
+.badge { color: #aeb8c0; font-size: 12px; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 292px; height: calc(100vh - 54px); }
+.stage { min-width: 0; display: grid; grid-template-rows: minmax(0, 1fr) 78px; background: #090b0d; }
+.canvas-wrap { min-height: 0; display: grid; place-items: center; padding: 14px; overflow: hidden; }
+canvas { max-width: 100%; max-height: 100%; width: auto; height: auto; background: #000; box-shadow: 0 0 0 1px #343a40; cursor: crosshair; }
+.transport { padding: 10px 18px; border-top: 1px solid #30363b; background: #181c20; }
+.controls { display: grid; grid-template-columns: 34px 145px 1fr 70px; align-items: center; gap: 10px; }
+button, select { height: 30px; border: 1px solid #3a4248; background: #22282d; color: #eef2f4; border-radius: 4px; }
+button { font-size: 15px; cursor: pointer; }
+input[type=range] { width: 100%; accent-color: #4ea1d3; }
+.opacity { display: grid; grid-template-columns: auto 1fr; }
+.hint { margin-top: 7px; color: #87939c; font-size: 11px; }
+aside { border-left: 1px solid #30363b; background: #181c20; padding: 16px; overflow-y: auto; }
+h2 { font-size: 11px; text-transform: uppercase; color: #98a4ac; font-weight: 650; margin: 0 0 9px; }
+.section { margin-bottom: 21px; }
+.metric { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 6px 0; border-bottom: 1px solid #252b30; font-size: 12px; }
+.metric span:last-child { font-variant-numeric: tabular-nums; color: #fff; }
+label { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 9px 0; color: #c4ccd1; }
+.legend { display: flex; gap: 14px; color: #9da8af; font-size: 11px; }
+.line { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 5px; }
+@media (max-width: 880px) {
+  body { overflow-y: auto; }
+  main { display: block; height: auto; }
+  .stage { height: calc(100vh - 54px); }
+  aside { border-left: 0; border-top: 1px solid #30363b; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .section { margin: 0; }
+}
+</style>
+</head>
+<body>
+<header><h1>Dense trajectory evaluation</h1><span class="badge" id="clip"></span></header>
+<main>
+  <section class="stage">
+    <div class="canvas-wrap"><canvas id="canvas"></canvas></div>
+    <div class="transport">
+      <div class="controls">
+        <button id="play" title="Play or pause">&#9654;</button>
+        <select id="algorithm"></select>
+        <input id="timeline" type="range" min="0" value="0" step="1">
+        <output id="frameLabel"></output>
+      </div>
+      <div class="hint" id="hint"></div>
+    </div>
+  </section>
+  <aside>
+    <div class="section"><h2>Display</h2>
+      <label>Comparison <select id="mode">
+        <option value="overlay">Tracking overlay</option>
+        <option value="current">Current frame</option>
+        <option value="warped">Warped reference</option>
+        <option value="difference">Difference</option>
+        <option value="field">Reference field</option>
+        <option value="groups">DTF centroid groups</option>
+        <option value="groupConfidence">Group confidence</option>
+      </select></label>
+      <label class="opacity">Overlay blend <input id="opacity" type="range" min="0" max="100" value="45"></label>
+      <label><input id="tracks" type="checkbox"> Trajectory samples</label>
+      <label><input id="truth" type="checkbox"> Annotation boundaries</label>
+      <label><input id="trail" type="checkbox" checked> Full path to current frame</label>
+    </div>
+    <div class="section"><h2>Legend</h2><div class="legend"><span><i class="line" style="background:linear-gradient(90deg,#52b6df,#7bd88f,#d77bdf)"></i>reference position</span><span><i class="line" style="background:#ffd166"></i>truth</span></div></div>
+    <div class="section"><h2>Result</h2><div id="metrics"></div></div>
+    <div class="section"><h2>Selected track</h2><div id="selected" class="badge">None</div></div>
+  </aside>
+</main>
+<script>
+const DATA=__DTF_EVAL_DATA__;
+const canvas=document.getElementById('canvas'), ctx=canvas.getContext('2d');
+canvas.width=DATA.width; canvas.height=DATA.height;
+const images=DATA.frames.map(src=>{const image=new Image(); image.src=src; return image;});
+function loadImages(sources){return sources.map(src=>{const image=new Image();image.src=src;return image;});}
+const visualImages={}; for(const [name,field] of Object.entries(DATA.fields)){visualImages[name]={field:loadImages(field.denseField),warped:loadImages(field.warpedReference),difference:loadImages(field.difference)};if(field.internalGroups){visualImages[name].groups=loadImages(field.internalGroups.membership);visualImages[name].groupConfidence=loadImages(field.internalGroups.groupConfidence);}}
+const timeline=document.getElementById('timeline'), algorithm=document.getElementById('algorithm');
+timeline.max=DATA.frames.length-1;
+Object.keys(DATA.fields).forEach(name=>algorithm.add(new Option(name,name)));
+let frame=0, playing=false, timer=null, selected=null;
+function colorFor(x,y){const hue=((x/DATA.width)*240+(y/DATA.height)*80)%360; return `hsl(${hue} 82% 62%)`;}
+function flatten(field,t){const out=[]; for(let y=0;y<field.reference.length;y++)for(let x=0;x<field.reference[y].length;x++){const p=field.coordinates[t][y][x]; out.push({x,y,p,origin:field.reference[y][x],vis:field.visibility[t][y][x]});} return out;}
+function draw(){
+  const image=images[frame]; if(!image.complete){image.onload=draw; return;}
+  const mode=document.getElementById('mode').value, visuals=visualImages[algorithm.value];
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(mode==='current' || mode==='overlay' || mode==='field' || mode==='groups')ctx.drawImage(image,0,0,canvas.width,canvas.height);
+  const field=DATA.fields[algorithm.value];
+  let overlay=null, alpha=1;
+  if(mode==='overlay'){overlay=visuals.warped[frame];alpha=+document.getElementById('opacity').value/100;}
+  else if(mode==='warped')overlay=visuals.warped[frame];
+  else if(mode==='difference')overlay=visuals.difference[frame];
+  else if(mode==='field'){overlay=visuals.field[frame];alpha=+document.getElementById('opacity').value/100;}
+  else if(mode==='groups'){overlay=visuals.groups?.[frame];alpha=+document.getElementById('opacity').value/100;}
+  else if(mode==='groupConfidence')overlay=visuals.groupConfidence?.[frame];
+  if(overlay){if(overlay.complete){ctx.globalAlpha=alpha;ctx.drawImage(overlay,0,0,canvas.width,canvas.height);ctx.globalAlpha=1;}else overlay.onload=draw;}
+  if(document.getElementById('truth').checked){ctx.strokeStyle='#ffd166'; ctx.lineWidth=1.5; for(const contour of DATA.annotations[frame]){if(!contour.length)continue;ctx.beginPath();ctx.moveTo(contour[0][0],contour[0][1]);for(const p of contour.slice(1))ctx.lineTo(p[0],p[1]);ctx.closePath();ctx.stroke();}}
+  if(document.getElementById('tracks').checked || selected){
+    const points=selected ? [selected] : flatten(field,frame);
+    ctx.globalAlpha=selected?1:.68; ctx.lineWidth=selected?2.5:1;
+    for(const item of points){
+      const key=item.y+','+item.x, current=field.coordinates[frame][item.y][item.x]; if(field.visibility[frame][item.y][item.x]<.5)continue;
+      ctx.strokeStyle=colorFor(item.origin[0],item.origin[1]); ctx.fillStyle=ctx.strokeStyle;
+      if(document.getElementById('trail').checked){ctx.beginPath();let begun=false;const a=Math.min(field.referenceIndex,frame),b=Math.max(field.referenceIndex,frame);for(let t=a;t<=b;t++){if(field.visibility[t][item.y][item.x]<.5)continue;const p=field.coordinates[t][item.y][item.x];if(!begun){ctx.moveTo(p[0],p[1]);begun=true;}else ctx.lineTo(p[0],p[1]);}ctx.stroke();}
+      ctx.beginPath();ctx.arc(current[0],current[1],selected?4:1.8,0,Math.PI*2);ctx.fill();
+    } ctx.globalAlpha=1;
+  }
+  document.getElementById('frameLabel').textContent=`${DATA.frameNumbers[frame]}`;
+  const hints={overlay:'Current frame blended with the tracked reference. Doubled edges or ghosting indicate drift.',current:'Unmodified current frame.',warped:'Reference frame reconstructed through all dense trajectories. Holes indicate invisible or newly revealed content.',difference:'Bright regions show mismatch in position or appearance; lighting changes also contribute.',field:'Colour identifies each reference location. Tearing or mixed colour indicates correspondence errors.',groups:'Colour shows the strongest final-layer DTF centroid at each reference location. These are computational groups, not objects.',groupConfidence:'Yellow means one centroid dominates; purple means membership is spread across several centroids.'};
+  document.getElementById('hint').textContent=hints[mode];
+}
+function metrics(){const field=DATA.fields[algorithm.value],result=DATA.report.algorithms[algorithm.value],overall=result.region_consistency.overall||{};const rows=[['Single-run compute',result.runtime_seconds.toFixed(3)+' s'],['Batch rate',(DATA.frames.length/result.runtime_seconds).toFixed(1)+' fps'],['Same-object recall',((overall.same_object_recall||0)*100).toFixed(1)+'%'],['Identity leakage',((overall.identity_leak_rate||0)*100).toFixed(1)+'%'],['Cycle median',result.cycle.median_px.toFixed(2)+' px'],['Cycle p90',result.cycle.p90_px.toFixed(2)+' px']];if(field.internalGroups)rows.push(['Internal centroids',field.internalGroups.groupCount]);document.getElementById('metrics').innerHTML=rows.map(r=>`<div class="metric"><span>${r[0]}</span><span>${r[1]}</span></div>`).join('');}
+function setFrame(value){frame=Math.max(0,Math.min(DATA.frames.length-1,value));timeline.value=frame;draw();}
+function updateGroupModes(){const available=!!DATA.fields[algorithm.value].internalGroups;for(const option of document.querySelectorAll('#mode option[value^="group"],#mode option[value="groups"]'))option.disabled=!available;if(!available && ['groups','groupConfidence'].includes(document.getElementById('mode').value))document.getElementById('mode').value='overlay';}
+document.getElementById('play').onclick=()=>{playing=!playing;document.getElementById('play').innerHTML=playing?'&#10074;&#10074;':'&#9654;';clearInterval(timer);if(playing)timer=setInterval(()=>{if(frame===DATA.frames.length-1)setFrame(0);else setFrame(frame+1);},120);};
+timeline.oninput=()=>setFrame(+timeline.value); algorithm.onchange=()=>{selected=null;updateGroupModes();metrics();draw();};
+for(const id of ['mode','tracks','truth','trail'])document.getElementById(id).onchange=draw;
+document.getElementById('opacity').oninput=draw;
+canvas.onclick=e=>{const rect=canvas.getBoundingClientRect(),mx=(e.clientX-rect.left)*canvas.width/rect.width,my=(e.clientY-rect.top)*canvas.height/rect.height,field=DATA.fields[algorithm.value];let best=null,d2=20*20;for(const item of flatten(field,frame)){if(item.vis<.5)continue;const dx=item.p[0]-mx,dy=item.p[1]-my,dd=dx*dx+dy*dy;if(dd<d2){d2=dd;best=item;}}selected=best;document.getElementById('selected').textContent=best?`Origin (${best.origin[0].toFixed(0)}, ${best.origin[1].toFixed(0)})`:'None';draw();};
+document.getElementById('clip').textContent=`Frames ${DATA.frameNumbers[0]}-${DATA.frameNumbers.at(-1)}`;updateGroupModes();metrics();setFrame(0);
+</script>
+</body>
+</html>

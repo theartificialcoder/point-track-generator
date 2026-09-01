@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Traffic correspondence benchmark</title>
+<style>
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #0d1012; color: #e7ecef; overflow: hidden; }
+header { min-height: 54px; display: flex; align-items: center; gap: 12px; padding: 9px 16px; background: #181c1f; border-bottom: 1px solid #32383d; }
+h1 { font-size: 14px; margin: 0 18px 0 0; white-space: nowrap; }
+select, button, input { accent-color: #73bde1; }
+select, button { height: 32px; border: 1px solid #41494f; border-radius: 4px; background: #242a2e; color: #eef2f4; }
+select { min-width: 170px; padding: 0 30px 0 9px; }
+button { width: 34px; cursor: pointer; font-size: 14px; }
+label { display: flex; align-items: center; gap: 7px; color: #b7c0c6; font-size: 12px; white-space: nowrap; }
+main { height: calc(100vh - 54px); display: grid; grid-template-rows: minmax(0,1fr) 106px; }
+.stage { min-height: 0; display: grid; place-items: center; padding: 16px; overflow: hidden; }
+canvas { display: block; width: min(100%, calc((100vh - 190px) * 1.7778)); height: auto; max-height: 100%; aspect-ratio: 16 / 9; background: #000; box-shadow: 0 0 0 1px #394046; }
+.transport { padding: 11px 18px 10px; background: #181c1f; border-top: 1px solid #32383d; }
+.timeline { display: grid; grid-template-columns: 34px minmax(160px,1fr) 70px; gap: 10px; align-items: center; }
+input[type=range] { width: 100%; }
+output { font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.summary { min-height: 32px; margin-top: 9px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.legend, .counts { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; color: #aab4ba; font-size: 11px; }
+.dot { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; }
+.count { font-variant-numeric: tabular-nums; color: #e5eaed; }
+.hint { color: #7f8b92; font-size: 11px; }
+@media (max-width: 900px) {
+  header { flex-wrap: wrap; }
+  h1 { width: 100%; }
+  main { height: calc(100vh - 95px); }
+  .hint { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Traffic correspondence benchmark</h1>
+  <label>Tracker <select id="algorithm"></select></label>
+  <label>Object <select id="object"></select></label>
+  <label>Trail <input id="trail" type="range" min="0" max="30" value="16"><span id="trailValue">16</span></label>
+  <label><input id="outline" type="checkbox" checked> Reference mask</label>
+</header>
+<main>
+  <section class="stage"><canvas id="canvas"></canvas></section>
+  <section class="transport">
+    <div class="timeline">
+      <button id="play" title="Play or pause">&#9654;</button>
+      <input id="frame" type="range" min="0" value="0" step="1">
+      <output id="frameValue"></output>
+    </div>
+    <div class="summary">
+      <div class="legend">
+        <span><i class="dot" style="background:#68d5ee"></i>Same object</span>
+        <span><i class="dot" style="background:#f1a85b"></i>Background drift</span>
+        <span><i class="dot" style="background:#e778c2"></i>Other-object drift</span>
+        <span><i class="dot" style="background:#778087"></i>Invisible / departed</span>
+      </div>
+      <div class="counts" id="counts"></div>
+      <span class="hint">Select one object to inspect its full point set. Arrow keys step frames.</span>
+    </div>
+  </section>
+</main>
+<script>
+const DATA=__SPARSE_TRACK_DATA__;
+const COLORS=['#778087','#68d5ee','#e778c2','#f1a85b','#778087'];
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+canvas.width=DATA.width;canvas.height=DATA.height;
+const images=DATA.frames.map(source=>{const image=new Image();image.src=source;return image;});
+const algorithm=document.getElementById('algorithm');
+const objectSelect=document.getElementById('object');
+const frameSlider=document.getElementById('frame');
+const trailSlider=document.getElementById('trail');
+frameSlider.max=DATA.frames.length-1;
+for(const name of Object.keys(DATA.algorithms))algorithm.add(new Option(name.replace(/-126$/,''),name));
+const preferred=[...algorithm.options].find(option=>option.value.includes('cotracker'));
+if(preferred)algorithm.value=preferred.value;
+objectSelect.add(new Option('All objects','all'));
+for(const object of DATA.objects)objectSelect.add(new Option(`${object.category}  ${object.id}`,object.id));
+objectSelect.value=String(DATA.defaultObject??DATA.objects[0].id);
+let frameIndex=0,timer=null,playing=false;
+
+function selectedIndices(){
+  if(objectSelect.value==='all')return DATA.queryTrackIds.map((_,index)=>index);
+  const id=Number(objectSelect.value);
+  return DATA.queryTrackIds.map((trackId,index)=>trackId===id?index:-1).filter(index=>index>=0);
+}
+function drawOutline(){
+  if(!document.getElementById('outline').checked||objectSelect.value==='all')return;
+  const contours=DATA.outlines[frameIndex][objectSelect.value]||[];
+  ctx.strokeStyle='#f2f5f6';ctx.lineWidth=1.25;ctx.setLineDash([4,3]);
+  for(const contour of contours){
+    if(!contour.length)continue;
+    ctx.beginPath();ctx.moveTo(contour[0][0],contour[0][1]);
+    for(const point of contour.slice(1))ctx.lineTo(point[0],point[1]);
+    ctx.closePath();ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+function draw(){
+  const image=images[frameIndex];if(!image.complete){image.onload=draw;return;}
+  ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);
+  drawOutline();
+  const result=DATA.algorithms[algorithm.value],indices=selectedIndices();
+  const trail=Number(trailSlider.value),start=Math.max(0,frameIndex-trail);
+  const counts=[0,0,0,0,0];
+  for(const index of indices){
+    if(frameIndex<DATA.queryBirthFrames[index])continue;
+    const currentStatus=result.status[frameIndex][index];counts[currentStatus]++;
+    if(objectSelect.value!=='all'&&trail>0){
+      ctx.strokeStyle='rgba(104,213,238,.48)';ctx.lineWidth=1;ctx.beginPath();let begun=false;
+      for(let time=start;time<=frameIndex;time++){
+        if(result.visibility[time][index]<.5)continue;
+        const point=result.coordinates[time][index];
+        if(!Number.isFinite(point[0])||!Number.isFinite(point[1]))continue;
+        if(!begun){ctx.moveTo(point[0],point[1]);begun=true;}else ctx.lineTo(point[0],point[1]);
+      }
+      if(begun)ctx.stroke();
+    }
+    if(result.visibility[frameIndex][index]<.5)continue;
+    const point=result.coordinates[frameIndex][index];
+    if(!Number.isFinite(point[0])||!Number.isFinite(point[1]))continue;
+    ctx.fillStyle=COLORS[currentStatus];ctx.beginPath();
+    ctx.arc(point[0],point[1],objectSelect.value==='all'?1.5:3,0,Math.PI*2);ctx.fill();
+  }
+  document.getElementById('counts').innerHTML=`<span>same <b class="count">${counts[1]}</b></span><span>background <b class="count">${counts[3]}</b></span><span>other <b class="count">${counts[2]}</b></span><span>hidden <b class="count">${counts[0]+counts[4]}</b></span>`;
+  document.getElementById('frameValue').textContent=`${DATA.frameNumbers[frameIndex]}  (${frameIndex+1}/${DATA.frames.length})`;
+}
+function setFrame(value){frameIndex=Math.max(0,Math.min(DATA.frames.length-1,value));frameSlider.value=frameIndex;draw();}
+function togglePlay(){
+  playing=!playing;document.getElementById('play').innerHTML=playing?'&#10074;&#10074;':'&#9654;';clearInterval(timer);
+  if(playing)timer=setInterval(()=>setFrame(frameIndex===DATA.frames.length-1?0:frameIndex+1),85);
+}
+document.getElementById('play').onclick=togglePlay;
+frameSlider.oninput=()=>setFrame(Number(frameSlider.value));
+algorithm.onchange=draw;
+objectSelect.onchange=()=>{
+  const selected=DATA.objects.find(object=>String(object.id)===objectSelect.value);
+  setFrame(selected?.birth??frameIndex);
+};
+trailSlider.oninput=()=>{document.getElementById('trailValue').textContent=trailSlider.value;draw();};
+document.getElementById('outline').onchange=draw;
+document.onkeydown=event=>{
+  if(event.key==='ArrowLeft')setFrame(frameIndex-1);
+  else if(event.key==='ArrowRight')setFrame(frameIndex+1);
+  else if(event.key===' '){event.preventDefault();togglePlay();}
+};
+setFrame(0);
+</script>
+</body>
+</html>
