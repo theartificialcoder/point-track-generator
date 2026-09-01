@@ -96,6 +96,10 @@ provide oracle admission only for this upper-bound test. Exact point error and
 occlusion recovery cannot be claimed because the dataset has neither physical
 point trajectories nor valid positive occlusion labels.
 
+The current locked-selection status is recorded in
+[`QUALIFICATION.md`](QUALIFICATION.md). Do not run the held-out half while the
+selection configuration remains unqualified.
+
 ## Run
 
 ```bash
