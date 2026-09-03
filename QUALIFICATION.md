@@ -9,6 +9,11 @@ active scope.
 The current question is narrow: given a point on an annotated object, how
 accurately and consistently does each tracker follow it through the clip?
 
+The selected provider will later generate prerecorded measurements for
+`blob-sim`. Those measurements supply point kinematics, visibility and
+correspondence confidence to its state estimator. They do not define masks,
+object identity, calibration truth or simulator state.
+
 ## Fixed Protocol
 
 | Item | Requirement |
@@ -57,6 +62,8 @@ admission and replenishment will be designed only after a tracker is qualified.
 2. Repeat CoTracker with corrected constant-time, aspect-preserving preprocessing.
 3. Compare retention across track age, object scale, mask interior and boundary.
 4. Lock the provider on frames 0-249, then evaluate frames 250-499 once.
+5. Only after selection, export the provider result through `blob-sim`'s
+   versioned trajectory contract and test provider-neutral replay.
 
 The primary result must remain unfiltered. Stratification explains failures; it
 must not remove difficult points from the score.

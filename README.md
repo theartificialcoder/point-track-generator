@@ -13,6 +13,41 @@ The project has four responsibilities:
 
 Videos, checkpoints, generated trajectories, and reports are excluded from Git.
 
+## Purpose And Blob-Sim Integration
+
+The immediate goal is to select a point tracker that preserves small traffic
+features accurately enough for the simulator. Expensive trajectories can then
+be recorded once on a large GPU and replayed while `blob-sim` develops and
+tests its state estimator and Simulator Core.
+
+```text
+video -> qualified tracker -> trajectory archive
+                                  |
+                                  v
+motion measurement ----------> blob-sim state estimator <-> Simulator Core
+                                  |
+                                  v
+                         class-agnostic mask output
+```
+
+Point trajectories contribute positions, displacement, visibility and
+correspondence confidence. They inform kinematics and history; they do not
+define mask area, classify a vehicle, assign an object ID, or replace motion
+support. `blob-sim` remains responsible for state correction, persistent
+memory, dynamics, calibration and mask output.
+
+The current `SparseTracks` files are qualification results, not the final
+runtime exchange format. In particular, `query_track_ids` are annotation IDs
+used only for scoring and must never become simulator identities. After a
+provider passes qualification, a small exporter will write `blob-sim`'s
+versioned `TrajectoryArchive` with native `(x, y)` coordinates, visibility,
+confidence, birth frames, consecutive source-frame indices, frame rate,
+provider provenance and causal/future-context metadata. `blob-sim` will replay
+that archive as source-neutral `PointTrajectoryMeasurement` values.
+
+This separation is deliberate: model code and GPU-heavy recording stay here;
+the provider-neutral contract and simulation authority stay in `blob-sim`.
+
 ## Layout
 
 | Path | Responsibility |
@@ -150,3 +185,13 @@ reported result.
 
 The active protocol and current evidence are summarized in
 [`QUALIFICATION.md`](QUALIFICATION.md).
+
+## Continuation Order
+
+1. Recreate the environment and verify CUDA.
+2. Restore the reviewed archive and official checkpoints locally.
+3. Generate one immutable stride-8 query cohort.
+4. Run LocoTrack and CoTracker3 against that same cohort.
+5. Compare accuracy, runtime, memory and the neutral viewers.
+6. Select a provider before implementing the versioned `blob-sim` exporter.
+7. Validate replay in `blob-sim` without giving trajectories mask or identity authority.
