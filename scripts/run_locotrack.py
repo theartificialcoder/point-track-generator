@@ -29,18 +29,25 @@ def main() -> int:
     parser.add_argument("--query-chunk-size", type=int, default=64)
     args = parser.parse_args()
 
+    if not torch.cuda.is_available():
+        raise RuntimeError("LocoTrack benchmark requires CUDA")
     device = torch.device("cuda")
-    frames = CocoTrafficArchive(args.archive).clip(args.start, args.length)
+    archive = CocoTrafficArchive(args.archive)
     queries = QuerySet.load(args.queries)
-    height, width = frames[0].image.shape[:2]
-    if any(frame.image.shape[:2] != (height, width) for frame in frames):
+    images_bgr = [
+        archive.image(index) for index in range(args.start, args.start + args.length)
+    ]
+    height, width = images_bgr[0].shape[:2]
+    if any(image.shape[:2] != (height, width) for image in images_bgr):
         raise ValueError("all frames must have the same native resolution")
     if np.any(queries.points[:, 0] >= width) or np.any(queries.points[:, 1] >= height):
         raise ValueError("queries are outside the native frame")
+    if np.any(queries.frame_indices < 0) or np.any(queries.frame_indices >= args.length):
+        raise ValueError("query birth frame lies outside the clip")
 
     padded_height = _multiple_of_eight(height)
     padded_width = _multiple_of_eight(width)
-    images = np.stack([frame.image[..., ::-1] for frame in frames]).copy()
+    images = np.stack([image[..., ::-1] for image in images_bgr]).copy()
     images = np.pad(
         images,
         ((0, 0), (0, padded_height - height), (0, padded_width - width), (0, 0)),
@@ -95,12 +102,12 @@ def main() -> int:
     tracks.save(args.output)
     print(
         {
-            "frames": len(frames),
+            "frames": args.length,
             "queries": len(queries.points),
             "native_size": [width, height],
             "model_size": [padded_width, padded_height],
             "seconds": runtime_seconds,
-            "effective_input_fps": len(frames) / runtime_seconds,
+            "effective_input_fps": args.length / runtime_seconds,
             "peak_mib": tracks.peak_gpu_memory_bytes / 1024**2,
             "output": str(args.output),
         }

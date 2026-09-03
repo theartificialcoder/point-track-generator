@@ -3,12 +3,16 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+build/
+dist/
 src/*.egg-info/
 models/**
 !models/.gitkeep
 reports/*
 !reports/.gitkeep
 artifacts/
+data/
+*.partial/
 *.npz
 *.mp4
 *.mov

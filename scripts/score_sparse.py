@@ -7,7 +7,11 @@ import json
 from pathlib import Path
 
 from dtf_eval.dataset import CocoTrafficArchive
-from dtf_eval.sparse import SparseTracks, score_region_retention
+from dtf_eval.sparse import (
+    SparseTracks,
+    score_object_frame_coverage,
+    score_region_retention,
+)
 
 
 def main() -> int:
@@ -38,12 +42,19 @@ def main() -> int:
                 (args.width, args.height),
                 visibility_level=args.visibility_level,
             ),
+            "object_frame_coverage": score_object_frame_coverage(
+                tracks,
+                frames,
+                (args.width, args.height),
+                visibility_level=args.visibility_level,
+            ),
         }
     report = {
         "methodology": {
             "task": "Track points seeded inside annotated objects without later annotation correction.",
             "ground_truth_limit": "Masks support region membership, not exact point correspondence.",
-            "annotations_used_for": "Query placement at first object appearance and scoring only.",
+            "annotations_used_for": "Controlled query admission and scoring only.",
+            "track_age": "Reported relative to each query's birth frame, not the video's absolute frame.",
             "visibility_level": args.visibility_level,
         },
         "clip": {"start": args.start, "length": args.length, "size": [args.width, args.height]},

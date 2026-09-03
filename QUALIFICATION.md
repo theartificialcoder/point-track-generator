@@ -1,58 +1,62 @@
 # Point-Tracker Qualification
 
-## Current Verdict
+## Scope
 
-No provider is yet qualified as simulator input. CoTracker3 is the current
-conditional-tracking baseline, but point admission from unlabelled motion
-support remains unqualified. The held-out evaluation half remains untouched.
+This project qualifies point correspondence only. Query discovery, motion-mask
+filtering, simulation, object management, and profile learning are outside its
+active scope.
+
+The current question is narrow: given a point on an annotated object, how
+accurately and consistently does each tracker follow it through the clip?
 
 ## Fixed Protocol
 
-| Item | Value |
+| Item | Requirement |
 |---|---|
-| Data | reviewed day-normal frames 0-249 |
-| Queries | exact native-coordinate stride-8 lattice |
-| Tracker input | 512x288 RGB; output restored to 1424x802 |
-| Output coordinates | native 1424x802 |
-| Query birth | first labelled-object/lattice intersection; scoring only |
+| Development data | reviewed day-normal frames 0-249 |
+| Query coordinates | native coordinates; approximately stride-8 density with one-point minimum |
+| Provider input | documented per run; predictions restored to native coordinates |
 | Temporal state | uninterrupted across the selected clip |
-| Memory control | independent query batches; no temporal reset |
-| Confidence decision | 0.60 |
+| Provider comparison | identical immutable query file |
+| Scoring | annotations used after inference only |
+| Report | recall, leakage, coverage, horizon, scale, runtime, memory |
 
-Annotations place the selection cohort and score later region membership. They
-never correct a trajectory. This tests conditional tracking, not unlabelled
-point admission, exact physical point error, or true occlusion recovery.
+Annotations place the evaluation cohort and score later region membership.
+They never correct a trajectory. Therefore this is conditional correspondence,
+not exact physical point error or unlabelled object discovery.
 
-## CoTracker Selection Results
+## Current Evidence
 
-| Measure | Result |
-|---|---:|
-| Queries / labelled objects | 3,582 / 173 |
-| Same-object recall / precision | 78.7% / 87.4% |
-| Object-balanced recall / precision | 68.9% / 71.7% |
-| Small / medium / large recall | 59.7% / 93.9% / 79.1% |
-| Identity / background leakage | 2.6% / 10.0% |
-| Recall at frame 60 / 249 | 88.5% / 69.9% |
-| Runtime / peak GPU memory | 563.2 s / 2.36 GiB |
+The current development run covers frames 0-249: 13.9 seconds, 175 annotated
+objects and continuous point births. CoTracker3 retained 69.4% of eligible
+points on the same annotated object, with 48.5% recall for small objects and
+93.7% object-frame coverage. It required 1,653.7 seconds for 8,606 queries.
 
-Query batching was checked on the 64-frame cohort. A 128-point batch changed
-overall recall from 93.48% to 93.31%; it preserves temporal memory and is an
-acceptable GPU-memory control. Feeding native-size frames improved small-object
-recall slightly but reduced overall recall, because CoTracker still normalizes
-its internal resolution.
+This is not yet a provider-selection result. CoTracker internally resizes the
+`1424x802` frames to `512x384`, the source timestamps are irregular, and some
+queries lie near imperfect mask boundaries. The result qualifies the current
+adapter as inadequate for small traffic detail; it does not establish
+CoTracker's general accuracy. Farneback remains a diagnostic motion control and
+is deliberately excluded from learned-tracker ranking.
 
-## Rejected Configurations
+## Rejected Provider Configurations
 
-| Configuration | Finding |
+| Configuration | Reason |
 |---|---|
-| CoTracker reset every 8 frames | Same 450 points fell from 94.7% to 84.4% recall; background leakage rose from 4.4% to 13.8%. |
-| Motion-onset query admission | Boundary-biased points reached 83.7% recall and 14.6% background leakage over 64 frames. |
-| TAPNext++ 512 | Only marginally exceeded CoTracker over 64 frames, but was about 103 times slower. |
-| LocoTrack Base | Native 64-frame input exceeded the available 4 GiB GPU memory. |
+| Reset CoTracker every 8 frames | destroyed temporal state and increased drift |
+| LocoTrack Base at native resolution | exceeded available GPU memory |
+| CoTracker3 offline on the 64-frame traffic slice | lower recall and coverage than online, with 2.4x runtime and 8.87 GiB peak allocation |
+| Precomputed flow-based replenishment | tested query admission rather than tracker quality and introduced stale points |
 
-## Required Before Held-Out Evaluation
+The final item is deliberately removed from the active implementation. Point
+admission and replenishment will be designed only after a tracker is qualified.
 
-1. Qualify native stride-8 point admission from motion support without labels.
-2. Preserve uninterrupted tracker memory; do not restore rolling resets.
-3. Lock the admission and provider configuration on frames 0-249.
-4. Run frames 250-499 once after the configuration is fixed.
+## Next Qualification
+
+1. Run native-resolution LocoTrack on the larger GPU using the locked stride-8 cohort.
+2. Repeat CoTracker with corrected constant-time, aspect-preserving preprocessing.
+3. Compare retention across track age, object scale, mask interior and boundary.
+4. Lock the provider on frames 0-249, then evaluate frames 250-499 once.
+
+The primary result must remain unfiltered. Stratification explains failures; it
+must not remove difficult points from the score.

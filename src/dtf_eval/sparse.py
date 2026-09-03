@@ -216,25 +216,21 @@ def continuous_strided_queries(
     *,
     stride: int,
 ) -> QuerySet:
-    """Create native-lattice queries when each annotated object first appears."""
+    """Maintain approximately stride-spaced query coverage as objects grow."""
 
     if stride < 1:
         raise ValueError("stride must be positive")
     xs = np.arange(stride // 2, size[0], stride, dtype=np.int32)
     ys = np.arange(stride // 2, size[1], stride, dtype=np.int32)
     grid_x, grid_y = np.meshgrid(xs, ys)
-    seen: set[int] = set()
+    admitted_counts: dict[int, int] = {}
     points: list[np.ndarray] = []
     track_ids: list[int] = []
     categories: list[str] = []
     birth_frames: list[int] = []
 
     for frame_index, frame in enumerate(frames):
-        instances = [
-            instance
-            for instance in frame.instances
-            if instance.track_id is not None and int(instance.track_id) not in seen
-        ]
+        instances = [instance for instance in frame.instances if instance.track_id is not None]
         all_masks = [
             _resize_mask(instance.mask, size)
             for instance in frame.instances
@@ -249,13 +245,32 @@ def continuous_strided_queries(
             object_id = int(instance.track_id)
             mask = _resize_mask(instance.mask, size)
             unambiguous = mask & (ownership_count == 1)
+            if not np.any(unambiguous):
+                continue
+
             selected = unambiguous[grid_y, grid_x]
-            object_points = np.column_stack(
-                [grid_x[selected], grid_y[selected]]
-            ).astype(np.float32)
+            lattice_points = np.column_stack([grid_x[selected], grid_y[selected]]).astype(
+                np.float32
+            )
+            target_count = max(1, len(lattice_points))
+            admitted = admitted_counts.get(object_id, 0)
+            add_count = target_count - admitted
+            if add_count <= 0:
+                continue
+
+            if len(lattice_points):
+                candidate_mask = np.zeros_like(unambiguous)
+                candidate_mask[
+                    lattice_points[:, 1].astype(np.int32),
+                    lattice_points[:, 0].astype(np.int32),
+                ] = True
+                object_points = _spatial_sample(candidate_mask, add_count)
+            else:
+                object_points = _spatial_sample(unambiguous, 1)
             if not len(object_points):
                 continue
-            seen.add(object_id)
+
+            admitted_counts[object_id] = admitted + len(object_points)
             points.append(object_points)
             count = len(object_points)
             track_ids.extend([object_id] * count)
@@ -286,18 +301,15 @@ def score_region_retention(
         raise ValueError("frame/track length mismatch")
     count_keys = ("eligible", "visible", "same", "other", "background")
     totals = {key: 0 for key in count_keys}
-    source_scale: dict[int, str] = {}
-    for frame in frames:
-        for instance in frame.instances:
-            if instance.track_id is not None:
-                source_scale.setdefault(
-                    int(instance.track_id),
-                    _scale_name(int(_resize_mask(instance.mask, size).sum())),
-                )
+    birth_frames = tracks.queries.frame_indices
+    source_scale = _query_source_scales(tracks.queries, frames, size)
     totals_by_scale: dict[str, dict[str, int]] = {}
     totals_by_object: dict[int, dict[str, int]] = {}
-    horizons: dict[str, dict[str, float | int]] = {}
-    requested = sorted({1, 8, 16, 30, 60, len(frames) - 1})
+    requested_ages = {age for age in (0, 1, 8, 16, 30, 60, 120, len(frames) - 1) if age >= 0}
+    totals_by_age = {
+        age: {key: 0 for key in count_keys}
+        for age in sorted(requested_ages)
+    }
 
     for frame_index, frame in enumerate(frames):
         by_id = {
@@ -316,45 +328,49 @@ def score_region_retention(
         inside &= (rounded[:, 1] >= 0) & (rounded[:, 1] < size[1])
         visible = (tracks.visibility[frame_index] >= visibility_level) & inside
 
-        frame_totals = {key: 0 for key in totals}
         for query_index, track_id in enumerate(tracks.queries.track_ids):
             object_id = int(track_id)
-            if frame_index < tracks.queries.frame_indices[query_index]:
+            age = frame_index - int(birth_frames[query_index])
+            if age < 0:
                 continue
             target = by_id.get(object_id)
             if target is None:
                 continue
-            frame_totals["eligible"] += 1
+            age_totals = totals_by_age.get(age)
+            totals["eligible"] += 1
+            if age_totals is not None:
+                age_totals["eligible"] += 1
             object_totals = totals_by_object.setdefault(
                 object_id, {key: 0 for key in count_keys}
             )
             object_totals["eligible"] += 1
             scale_totals = totals_by_scale.setdefault(
-                source_scale[object_id], {key: 0 for key in count_keys}
+                source_scale[query_index], {key: 0 for key in count_keys}
             )
             scale_totals["eligible"] += 1
             if not visible[query_index]:
                 continue
-            frame_totals["visible"] += 1
+            totals["visible"] += 1
+            if age_totals is not None:
+                age_totals["visible"] += 1
             object_totals["visible"] += 1
             scale_totals["visible"] += 1
             x, y = rounded[query_index]
             if target[y, x]:
-                frame_totals["same"] += 1
+                outcome = "same"
                 object_totals["same"] += 1
                 scale_totals["same"] += 1
             elif union[y, x]:
-                frame_totals["other"] += 1
+                outcome = "other"
                 object_totals["other"] += 1
                 scale_totals["other"] += 1
             else:
-                frame_totals["background"] += 1
+                outcome = "background"
                 object_totals["background"] += 1
                 scale_totals["background"] += 1
-        for key, value in frame_totals.items():
-            totals[key] += value
-        if frame_index in requested:
-            horizons[str(frame_index)] = _rates(frame_totals)
+            totals[outcome] += 1
+            if age_totals is not None:
+                age_totals[outcome] += 1
 
     return {
         **_rates(totals),
@@ -362,7 +378,83 @@ def score_region_retention(
         "by_source_scale": {
             scale: _rates(counts) for scale, counts in sorted(totals_by_scale.items())
         },
-        "horizons": horizons,
+        "track_age_frames": {
+            str(age): _rates(counts)
+            for age, counts in totals_by_age.items()
+            if counts["eligible"]
+        },
+    }
+
+
+def _query_source_scales(
+    queries: QuerySet,
+    frames: tuple[Frame, ...],
+    size: tuple[int, int],
+) -> list[str]:
+    """Return each query's object scale at that query's birth frame."""
+
+    scales: list[str] = []
+    cache: dict[tuple[int, int], str] = {}
+    for track_id, birth_frame in zip(
+        queries.track_ids, queries.frame_indices, strict=True
+    ):
+        if not 0 <= birth_frame < len(frames):
+            raise ValueError("query birth frame lies outside the scored clip")
+        key = (int(birth_frame), int(track_id))
+        if key in cache:
+            scales.append(cache[key])
+            continue
+        instance = next(
+            (
+                item
+                for item in frames[int(birth_frame)].instances
+                if item.track_id == int(track_id)
+            ),
+            None,
+        )
+        if instance is None:
+            raise ValueError("query source object is absent at its birth frame")
+        scale = _scale_name(int(_resize_mask(instance.mask, size).sum()))
+        cache[key] = scale
+        scales.append(scale)
+    return scales
+
+
+def score_object_frame_coverage(
+    tracks: SparseTracks,
+    frames: tuple[Frame, ...],
+    size: tuple[int, int],
+    *,
+    visibility_level: float = 0.5,
+) -> dict[str, float | int]:
+    """Measure whether each annotated object-frame has one retained point."""
+
+    if len(frames) != tracks.coordinates.shape[0]:
+        raise ValueError("frame/track length mismatch")
+    covered = total = 0
+    births = tracks.queries.frame_indices
+    for frame_index, frame in enumerate(frames):
+        coordinates = tracks.coordinates[frame_index]
+        rounded = np.rint(np.where(np.isfinite(coordinates), coordinates, 0)).astype(np.int32)
+        valid = (tracks.visibility[frame_index] >= visibility_level) & (births <= frame_index)
+        valid &= np.isfinite(coordinates).all(axis=1)
+        valid &= (rounded[:, 0] >= 0) & (rounded[:, 0] < size[0])
+        valid &= (rounded[:, 1] >= 0) & (rounded[:, 1] < size[1])
+        for instance in frame.instances:
+            if instance.track_id is None:
+                continue
+            total += 1
+            members = valid & (tracks.queries.track_ids == int(instance.track_id))
+            if not np.any(members):
+                continue
+            mask = _resize_mask(instance.mask, size)
+            points = rounded[members]
+            if np.any(mask[points[:, 1], points[:, 0]]):
+                covered += 1
+    return {
+        "annotated_object_frames": total,
+        "covered_object_frames": covered,
+        "coverage_rate": covered / max(1, total),
     }
 
 

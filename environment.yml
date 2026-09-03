@@ -1,0 +1,17 @@
+name: dtf-trackers
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - ffmpeg
+  - numpy=1.26
+  - pytorch=2.4
+  - pytorch-cuda=12.4
+  - torchvision=0.19
+  - pip
+  - pip:
+      - -e .[dev]
+      - -e vendor/co-tracker
+      - einops==0.8.1

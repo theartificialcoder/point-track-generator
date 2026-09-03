@@ -1,18 +1,6 @@
 [submodule "vendor/co-tracker"]
 	path = vendor/co-tracker
 	url = https://github.com/facebookresearch/co-tracker.git
-[submodule "vendor/MFTIQ"]
-	path = vendor/MFTIQ
-	url = https://github.com/serycjon/MFTIQ.git
-[submodule "vendor/alltracker"]
-	path = vendor/alltracker
-	url = https://github.com/aharley/alltracker.git
 [submodule "vendor/locotrack"]
 	path = vendor/locotrack
 	url = https://github.com/cvlab-kaist/locotrack.git
-[submodule "vendor/tapnet"]
-	path = vendor/tapnet
-	url = https://github.com/google-deepmind/tapnet.git
-[submodule "vendor/track-on"]
-	path = vendor/track-on
-	url = https://github.com/gorkaydemir/track_on.git

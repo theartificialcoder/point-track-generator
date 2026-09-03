@@ -13,6 +13,74 @@ from .dataset import Frame
 from .sparse import SparseTracks
 
 
+def _packed_uint16(values: np.ndarray, *, scale: float = 1.0) -> str:
+    """Encode finite non-negative values compactly for the browser viewer."""
+
+    encoded = np.full(values.shape, np.iinfo(np.uint16).max, dtype="<u2")
+    finite = np.isfinite(values) & (values >= 0)
+    quantized = np.rint(values[finite] * scale)
+    if np.any(quantized >= np.iinfo(np.uint16).max):
+        raise ValueError("viewer coordinates exceed uint16 encoding range")
+    encoded[finite] = quantized.astype(np.uint16)
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def _packed_uint8(values: np.ndarray) -> str:
+    encoded = np.rint(np.clip(values, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def write_neutral_track_viewer(
+    output: str | Path,
+    tracks: SparseTracks | dict[str, SparseTracks],
+    *,
+    video_file: str,
+    frame_numbers: np.ndarray,
+    timestamps_seconds: np.ndarray,
+    size: tuple[int, int],
+) -> None:
+    """Write an annotation-free viewer for one or more trajectory archives."""
+
+    results = tracks if isinstance(tracks, dict) else {"Tracks": tracks}
+    if not results:
+        raise ValueError("viewer requires at least one tracker result")
+    frame_counts = {result.visibility.shape[0] for result in results.values()}
+    if len(frame_counts) != 1:
+        raise ValueError("viewer results must have the same frame count")
+    frame_count = frame_counts.pop()
+    if frame_numbers.shape != (frame_count,):
+        raise ValueError("frame-number length does not match tracks")
+    if timestamps_seconds.shape != (frame_count,):
+        raise ValueError("timestamp length does not match tracks")
+    if np.any(np.diff(timestamps_seconds) < 0):
+        raise ValueError("viewer timestamps must be monotonic")
+
+    payload = {
+        "width": int(size[0]),
+        "height": int(size[1]),
+        "frameCount": frame_count,
+        "frameNumbers": frame_numbers.astype(int).tolist(),
+        "timestamps": np.round(timestamps_seconds, 6).tolist(),
+        "videoFile": video_file,
+        "results": {
+            name: {
+                "pointCount": result.visibility.shape[1],
+                "birthFrames": result.queries.frame_indices.astype(int).tolist(),
+                "coordinates": _packed_uint16(result.coordinates, scale=4.0),
+                "visibility": _packed_uint8(result.visibility),
+            }
+            for name, result in results.items()
+        },
+    }
+    template = Path(__file__).with_name("neutral_track_viewer.html").read_text(
+        encoding="utf-8"
+    )
+    Path(output).write_text(
+        template.replace("__TRACK_DATA__", json.dumps(payload, separators=(",", ":"))),
+        encoding="utf-8",
+    )
+
+
 def _image_uri(image: np.ndarray, size: tuple[int, int]) -> str:
     resized = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
     ok, encoded = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 86])

@@ -8,23 +8,18 @@ version = "0.1.0"
 description = "Offline point-trajectory generator and qualification harness"
 requires-python = ">=3.10"
 dependencies = [
-    "einops>=0.7",
-    "numpy>=1.24",
+    "numpy>=1.24,<2.0",
     "opencv-python>=4.8",
-    "torch>=2.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "ruff>=0.4"]
 
-[project.scripts]
-dtf-eval = "dtf_eval.cli:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-dtf_eval = ["viewer.html", "sparse_viewer.html"]
+dtf_eval = ["sparse_viewer.html", "neutral_track_viewer.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

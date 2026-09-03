@@ -110,7 +110,9 @@ class CocoTrafficArchive:
             raise ValueError(f"missing or ambiguous frame: {file_name}")
         return matches[0]
 
-    def frame(self, index: int) -> Frame:
+    def image(self, index: int) -> np.ndarray:
+        """Decode one image without loading benchmark annotations."""
+
         image_info = self._images[index]
         member = self._image_member(str(image_info["file_name"]))
         with zipfile.ZipFile(self.path) as source:
@@ -118,6 +120,11 @@ class CocoTrafficArchive:
         image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError(f"cannot decode frame {member}")
+        return image
+
+    def frame(self, index: int) -> Frame:
+        image_info = self._images[index]
+        image = self.image(index)
 
         instances = []
         for annotation in self._annotations[int(image_info["id"])]:
@@ -136,6 +143,27 @@ class CocoTrafficArchive:
         raw_timestamp = image_info.get("timestamp_s")
         timestamp = None if raw_timestamp is None else float(raw_timestamp)
         return Frame(frame_number, image, tuple(instances), timestamp)
+
+    def timeline(self, start: int, length: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return source frame numbers and timestamps without decoding images."""
+
+        if start < 0 or length < 1 or start + length > len(self):
+            raise ValueError("requested timeline lies outside the archive")
+        images = self._images[start : start + length]
+        raw_timestamps = [item.get("timestamp_s") for item in images]
+        if any(value is None for value in raw_timestamps):
+            raise ValueError("archive timeline requires timestamps")
+        frame_numbers = np.asarray(
+            [
+                int(item.get("source_frame_index", item.get("frame_index", index)))
+                for index, item in enumerate(images, start=start)
+            ],
+            dtype=np.int64,
+        )
+        timestamps = np.asarray(raw_timestamps, dtype=np.float64)
+        if np.any(np.diff(timestamps) <= 0):
+            raise ValueError("archive timestamps must be strictly increasing")
+        return frame_numbers, timestamps
 
     def clip(self, start: int, length: int) -> tuple[Frame, ...]:
         if start < 0 or length < 2 or start + length > len(self):

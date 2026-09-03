@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trajectory inspection</title>
+<style>
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; color: #e6ebee; background: #0c0f11; overflow: hidden; }
+header { height: 52px; display: flex; align-items: center; gap: 18px; padding: 0 16px; background: #181c1f; border-bottom: 1px solid #343a3e; }
+h1 { margin: 0 auto 0 0; font-size: 14px; font-weight: 650; }
+label { display: flex; align-items: center; gap: 7px; color: #b7c0c5; font-size: 12px; white-space: nowrap; }
+input { accent-color: #5dc9e6; }
+select { height: 30px; min-width: 112px; padding: 0 28px 0 9px; border: 1px solid #465057; border-radius: 4px; color: #edf2f4; background: #252b2f; }
+main { height: calc(100vh - 52px); display: grid; grid-template-rows: minmax(0, 1fr) 104px; }
+.stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 14px; overflow: hidden; }
+.media { position: relative; max-width: 100%; max-height: 100%; aspect-ratio: var(--aspect); box-shadow: 0 0 0 1px #3b4246; }
+video, canvas { display: block; width: 100%; height: 100%; }
+video { object-fit: contain; background: #000; }
+canvas { position: absolute; inset: 0; cursor: crosshair; }
+.transport { padding: 10px 18px; background: #181c1f; border-top: 1px solid #343a3e; }
+.timeline { display: grid; grid-template-columns: 34px minmax(180px, 1fr) 154px; align-items: center; gap: 10px; }
+button { width: 34px; height: 32px; padding: 0; border: 1px solid #465057; border-radius: 4px; color: #edf2f4; background: #252b2f; cursor: pointer; }
+input[type=range] { width: 100%; }
+output, .readout { font-size: 12px; font-variant-numeric: tabular-nums; }
+output { color: #dce3e6; text-align: right; }
+.status { height: 36px; display: flex; align-items: end; justify-content: space-between; gap: 16px; color: #aab4b9; font-size: 11px; }
+.legend { display: flex; gap: 16px; }
+.dot { display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; }
+.readout { color: #e4e9eb; }
+.hint { color: #7f8a90; }
+@media (max-width: 760px) { .hint { display: none; } header { gap: 10px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trajectory inspection</h1>
+  <label>Result <select id="source"></select></label>
+  <label><input id="points" type="checkbox" checked> Active points</label>
+  <label><input id="inactive" type="checkbox"> Inactive positions</label>
+  <label><input id="trail" type="checkbox"> Selected trail</label>
+</header>
+<main>
+  <section class="stage">
+    <div class="media" id="media">
+      <video id="video" muted playsinline preload="auto"></video>
+      <canvas id="canvas"></canvas>
+    </div>
+  </section>
+  <section class="transport">
+    <div class="timeline">
+      <button id="play" title="Play or pause">&#9654;</button>
+      <input id="frame" type="range" min="0" value="0" step="1">
+      <output id="frameValue"></output>
+    </div>
+    <div class="status">
+      <div class="legend">
+        <span><i class="dot" style="background:#60cbe7"></i>Active</span>
+        <span><i class="dot" style="background:#f1ad62"></i>Inactive, optional</span>
+      </div>
+      <span class="readout" id="readout">No point selected</span>
+      <span class="hint">Click a point to inspect its recorded history. Trails are off by default.</span>
+    </div>
+  </section>
+</main>
+<script>
+const DATA=__TRACK_DATA__;
+function uint16(source){const raw=atob(source),bytes=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);return new Uint16Array(bytes.buffer);}
+function uint8(source){const raw=atob(source),values=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)values[i]=raw.charCodeAt(i);return values;}
+const video=document.getElementById('video'),canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const slider=document.getElementById('frame'),play=document.getElementById('play');
+const source=document.getElementById('source'),names=Object.keys(DATA.results);
+const media=document.getElementById('media');
+video.src=DATA.videoFile;canvas.width=DATA.width;canvas.height=DATA.height;
+media.style.setProperty('--aspect',`${DATA.width} / ${DATA.height}`);slider.max=DATA.frameCount-1;
+let frame=0,selected=-1,animation=0,TRACK,coordinates,visibility;
+function selectResult(name){TRACK=DATA.results[name];coordinates=uint16(TRACK.coordinates);visibility=uint8(TRACK.visibility);selected=-1;draw();}
+function offset(t,n){return (t*TRACK.pointCount+n)*2;}
+function point(t,n){const i=offset(t,n),x=coordinates[i],y=coordinates[i+1];return x===65535||y===65535?null:[x/4,y/4];}
+function confidence(t,n){return visibility[t*TRACK.pointCount+n]/255;}
+function nearestFrame(time){let lo=0,hi=DATA.timestamps.length-1;while(lo<hi){const mid=(lo+hi+1)>>1;if(DATA.timestamps[mid]<=time+1e-4)lo=mid;else hi=mid-1;}return lo;}
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(document.getElementById('trail').checked&&selected>=0){
+    const birth=TRACK.birthFrames[selected];ctx.strokeStyle='rgba(250,244,211,.82)';ctx.lineWidth=1.5;ctx.beginPath();let begun=false;
+    for(let t=birth;t<=frame;t++){const p=point(t,selected);if(!p||confidence(t,selected)<.5)continue;if(!begun){ctx.moveTo(...p);begun=true;}else ctx.lineTo(...p);}
+    if(begun)ctx.stroke();
+  }
+  if(document.getElementById('points').checked){
+    const showInactive=document.getElementById('inactive').checked;
+    for(const active of [true,false]){if(!active&&!showInactive)continue;ctx.fillStyle=active?'#60cbe7':'#f1ad62';ctx.beginPath();for(let n=0;n<TRACK.pointCount;n++){if(n===selected||frame<TRACK.birthFrames[n]||(confidence(frame,n)>=.5)!==active)continue;const p=point(frame,n);if(!p)continue;ctx.moveTo(p[0]+1.65,p[1]);ctx.arc(p[0],p[1],1.65,0,Math.PI*2);}ctx.fill();}
+  }
+  if(selected>=0){const p=point(frame,selected);if(p){ctx.strokeStyle='#fff6c8';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(p[0],p[1],6,0,Math.PI*2);ctx.stroke();}}
+  const sourceFrame=DATA.frameNumbers[frame];document.getElementById('frameValue').textContent=`frame ${sourceFrame}  ${DATA.timestamps[frame].toFixed(2)} s`;
+  document.getElementById('readout').textContent=selected<0?`${TRACK.pointCount.toLocaleString()} points`:`point ${selected} · born frame ${DATA.frameNumbers[TRACK.birthFrames[selected]]} · ${confidence(frame,selected)>=.5?'active':'inactive'}`;
+}
+function setFrame(value,seek=true){frame=Math.max(0,Math.min(DATA.frameCount-1,value));slider.value=frame;if(seek)video.currentTime=DATA.timestamps[frame];draw();}
+function updatePlayback(){
+  if(video.currentTime>=DATA.timestamps[DATA.frameCount-1]){video.pause();play.innerHTML='&#9654;';setFrame(DATA.frameCount-1,false);return;}
+  const next=nearestFrame(video.currentTime);if(next!==frame){frame=next;slider.value=frame;draw();}if(!video.paused)animation=requestAnimationFrame(updatePlayback);
+}
+play.onclick=async()=>{if(video.paused){if(frame===DATA.frameCount-1)setFrame(0);await video.play();play.innerHTML='&#10074;&#10074;';cancelAnimationFrame(animation);updatePlayback();}else{video.pause();play.innerHTML='&#9654;';}};
+video.onended=()=>{play.innerHTML='&#9654;';};
+slider.oninput=()=>{video.pause();play.innerHTML='&#9654;';setFrame(Number(slider.value));};
+canvas.onclick=event=>{const rect=canvas.getBoundingClientRect(),x=(event.clientX-rect.left)*canvas.width/rect.width,y=(event.clientY-rect.top)*canvas.height/rect.height;let best=-1,bestDistance=100;
+  const showInactive=document.getElementById('inactive').checked;
+  for(let n=0;n<TRACK.pointCount;n++){if(frame<TRACK.birthFrames[n]||(!showInactive&&confidence(frame,n)<.5))continue;const p=point(frame,n);if(!p)continue;const d=(p[0]-x)**2+(p[1]-y)**2;if(d<bestDistance){bestDistance=d;best=n;}}
+  selected=best;draw();
+};
+for(const id of ['points','inactive','trail'])document.getElementById(id).onchange=draw;
+for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name;source.append(option);}
+source.onchange=()=>selectResult(source.value);
+document.onkeydown=event=>{if(event.key==='ArrowLeft'){video.pause();setFrame(frame-1);}else if(event.key==='ArrowRight'){video.pause();setFrame(frame+1);}else if(event.key===' '){event.preventDefault();play.click();}};
+selectResult(names[0]);setFrame(0);
+</script>
+</body>
+</html>
